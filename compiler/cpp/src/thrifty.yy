@@ -1021,14 +1021,8 @@ FieldRequiredness:
     }
 | tok_optional
     {
-      if (g_arglist) {
-        if (g_parse_mode == PROGRAM) {
-          pwarning(1, "optional keyword is ignored in argument lists.\n");
-        }
-        $$ = t_field::T_OPT_IN_REQ_OUT;
-      } else {
-        $$ = t_field::T_OPTIONAL;
-      }
+      pwarning(1, "Optional works only in c++.\n");
+	  $$ = t_field::T_OPTIONAL;
     }
 |
     {

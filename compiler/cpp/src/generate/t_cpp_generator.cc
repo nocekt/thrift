@@ -209,7 +209,7 @@ class t_cpp_generator : public t_oop_generator {
   std::string namespace_prefix(std::string ns);
   std::string namespace_open(std::string ns);
   std::string namespace_close(std::string ns);
-  std::string type_name(t_type* ttype, bool in_typedef=false, bool arg=false);
+  std::string type_name(t_type* ttype, bool in_typedef=false, bool arg=false, bool optional=false);
   std::string base_type_name(t_base_type::t_base tbase);
   std::string declare_field(t_field* tfield, bool init=false, bool pointer=false, bool constant=false, bool reference=false);
   std::string function_signature(t_function* tfunction, std::string style, std::string prefix="", bool name_params=true);
@@ -374,6 +374,9 @@ void t_cpp_generator::init_generator() {
   // Include C++xx compatibility header
   f_types_ << "#include <thrift/cxxfunctional.h>" << endl;
 
+  // Include boost optional header
+  f_types_ << "#include <boost/optional/optional.hpp>" << endl;
+  
   // Include other Thrift includes
   const vector<t_program*>& includes = program_->get_includes();
   for (size_t i = 0; i < includes.size(); ++i) {
@@ -895,7 +898,8 @@ void t_cpp_generator::generate_struct_definition(ofstream& out,
         if (t->is_enum()) {
           dval += "(" + type_name(t) + ")";
         }
-        dval += t->is_string() ? "" : "0";
+        bool is_optional = (*m_iter)->get_req() == t_field::T_OPTIONAL;
+        dval += (t->is_string() || is_optional) ? "" : "0";
         t_const_value* cv = (*m_iter)->get_value();
         if (cv != NULL) {
           dval = render_const_value(out, (*m_iter)->get_name(), t, cv);
@@ -1323,8 +1327,13 @@ void t_cpp_generator::generate_struct_reader(ofstream& out,
             indent() << "if (" << isset_prefix << (*f_iter)->get_name() << ")" << endl <<
             indent() << "  throw TProtocolException(TProtocolException::INVALID_DATA);" << endl;
 #endif
-
-          if (pointers && !(*f_iter)->get_type()->is_xception()) {
+		
+          bool is_optional = (*f_iter)->get_req() == t_field::T_OPTIONAL;
+          if(is_optional) {
+            // Variable must be intialized. 
+            out << indent() << "this->" << (*f_iter)->get_name() << " = 0;" << endl;
+            generate_deserialize_field(out, *f_iter, "(*(this->", "))");
+          } else if(pointers && !(*f_iter)->get_type()->is_xception()) {
             generate_deserialize_field(out, *f_iter, "(*(this->", "))");
           } else {
             generate_deserialize_field(out, *f_iter, "this->");
@@ -1411,9 +1420,13 @@ void t_cpp_generator::generate_struct_writer(ofstream& out,
     "xfer += oprot->writeStructBegin(\"" << name << "\");" << endl;
 
   for (f_iter = fields.begin(); f_iter != fields.end(); ++f_iter) {
-    bool check_if_set = (*f_iter)->get_req() == t_field::T_OPTIONAL ||
-                        (*f_iter)->get_type()->is_xception();
-    if (check_if_set) {
+    bool is_optional = (*f_iter)->get_req() == t_field::T_OPTIONAL; 
+    bool is_xception = (*f_iter)->get_type()->is_xception();
+    
+    if(is_optional) {
+      out << endl << indent() << "if(*(this->" << (*f_iter)->get_name() << ")) {" << endl;
+      indent_up();
+    } else if(is_xception) {
       out << endl << indent() << "if (this->__isset." << (*f_iter)->get_name() << ") {" << endl;
       indent_up();
     } else {
@@ -1427,7 +1440,14 @@ void t_cpp_generator::generate_struct_writer(ofstream& out,
       type_to_enum((*f_iter)->get_type()) << ", " <<
       (*f_iter)->get_key() << ");" << endl;
     // Write field contents
-    if (pointers && !(*f_iter)->get_type()->is_xception()) {
+    if(is_optional) {
+      if(pointers) {
+        generate_serialize_field(out, *f_iter, "(*(this->", ")).get()");
+      } else {
+        generate_serialize_field(out, *f_iter, "(*(this->", "))");
+      }
+    }
+    else if (pointers && !is_xception) {
       generate_serialize_field(out, *f_iter, "(*(this->", "))");
     } else {
       generate_serialize_field(out, *f_iter, "this->");
@@ -1435,7 +1455,7 @@ void t_cpp_generator::generate_struct_writer(ofstream& out,
     // Write field closer
     indent(out) <<
       "xfer += oprot->writeFieldEnd();" << endl;
-    if (check_if_set) {
+    if (is_optional || is_xception) {
       indent_down();
       indent(out) << '}';
     }
@@ -4325,9 +4345,14 @@ string t_cpp_generator::namespace_close(string ns) {
  * @param ttype The type
  * @return String of the type name, i.e. std::set<type>
  */
-string t_cpp_generator::type_name(t_type* ttype, bool in_typedef, bool arg) {
+string t_cpp_generator::type_name(t_type* ttype, bool in_typedef, bool arg, bool optional) {
   if (ttype->is_base_type()) {
-    string bname = base_type_name(((t_base_type*)ttype)->get_base());
+    string bname;
+    if(optional) {
+        bname = "boost::optional<" + base_type_name(((t_base_type*)ttype)->get_base()) + ">";
+    } else {
+        bname = base_type_name(((t_base_type*)ttype)->get_base());
+    }
     std::map<string, string>::iterator it = ttype->annotations_.find("cpp.type");
     if (it != ttype->annotations_.end()) {
       bname = it->second;
@@ -4444,7 +4469,7 @@ string t_cpp_generator::declare_field(t_field* tfield, bool init, bool pointer, 
   if (constant) {
     result += "const ";
   }
-  result += type_name(tfield->get_type());
+  result += type_name(tfield->get_type(),false,false,tfield->get_req() == t_field::T_OPTIONAL);
   if (pointer) {
     result += "*";
   }
@@ -4558,7 +4583,8 @@ string t_cpp_generator::argument_list(t_struct* tstruct, bool name_params, bool 
     } else {
       result += ", ";
     }
-    result += type_name((*f_iter)->get_type(), false, true) + " " +
+    bool is_optional = (*f_iter)->get_req() == t_field::T_OPTIONAL;
+    result += type_name((*f_iter)->get_type(), false, true, is_optional) + " " +
       (name_params ? (*f_iter)->get_name() : "/* " + (*f_iter)->get_name() + " */");
   }
   return result;
