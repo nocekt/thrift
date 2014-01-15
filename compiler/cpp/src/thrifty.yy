@@ -1021,7 +1021,9 @@ FieldRequiredness:
     }
 | tok_optional
     {
-      pwarning(1, "Optional works only in c++.\n");
+	  if (g_arglist && g_parse_mode == PROGRAM) {
+        pwarning(1, "Optional works only in c++.\n");
+      }
 	  $$ = t_field::T_OPTIONAL;
     }
 |

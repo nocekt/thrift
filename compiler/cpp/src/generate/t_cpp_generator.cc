@@ -1331,7 +1331,9 @@ void t_cpp_generator::generate_struct_reader(ofstream& out,
           bool is_optional = (*f_iter)->get_req() == t_field::T_OPTIONAL;
           if(is_optional) {
             // Variable must be intialized. 
-            out << indent() << "this->" << (*f_iter)->get_name() << " = 0;" << endl;
+            out << 
+              indent() << "this->" << (*f_iter)->get_name() << " = " + 
+              type_name((*f_iter)->get_type()) + "();" << endl;
             generate_deserialize_field(out, *f_iter, "(*(this->", "))");
           } else if(pointers && !(*f_iter)->get_type()->is_xception()) {
             generate_deserialize_field(out, *f_iter, "(*(this->", "))");
@@ -1424,7 +1426,7 @@ void t_cpp_generator::generate_struct_writer(ofstream& out,
     bool is_xception = (*f_iter)->get_type()->is_xception();
     
     if(is_optional) {
-      out << endl << indent() << "if(*(this->" << (*f_iter)->get_name() << ")) {" << endl;
+      out << endl << indent() << (pointers ? "if(*(this->" : "if((this->") << (*f_iter)->get_name() << ")) {" << endl;
       indent_up();
     } else if(is_xception) {
       out << endl << indent() << "if (this->__isset." << (*f_iter)->get_name() << ") {" << endl;
@@ -1444,7 +1446,7 @@ void t_cpp_generator::generate_struct_writer(ofstream& out,
       if(pointers) {
         generate_serialize_field(out, *f_iter, "(*(this->", ")).get()");
       } else {
-        generate_serialize_field(out, *f_iter, "(*(this->", "))");
+        generate_serialize_field(out, *f_iter, "(this->", ").get()");
       }
     }
     else if (pointers && !is_xception) {
@@ -4347,17 +4349,16 @@ string t_cpp_generator::namespace_close(string ns) {
  */
 string t_cpp_generator::type_name(t_type* ttype, bool in_typedef, bool arg, bool optional) {
   if (ttype->is_base_type()) {
-    string bname;
-    if(optional) {
-        bname = "boost::optional<" + base_type_name(((t_base_type*)ttype)->get_base()) + ">";
-    } else {
-        bname = base_type_name(((t_base_type*)ttype)->get_base());
-    }
+    string bname = base_type_name(((t_base_type*)ttype)->get_base());
     std::map<string, string>::iterator it = ttype->annotations_.find("cpp.type");
     if (it != ttype->annotations_.end()) {
       bname = it->second;
     }
 
+	if (optional) {
+	  bname = "boost::optional<" + bname + ">";
+	}
+	
     if (!arg) {
       return bname;
     }
@@ -4389,6 +4390,10 @@ string t_cpp_generator::type_name(t_type* ttype, bool in_typedef, bool arg, bool
       cname = "std::vector<" + type_name(tlist->get_elem_type(), in_typedef) + "> ";
     }
 
+	if (optional) {
+	  cname = "boost::optional<" + cname + ">";
+	}
+	
     if (arg) {
       return "const " + cname + "&";
     } else {
@@ -4416,7 +4421,11 @@ string t_cpp_generator::type_name(t_type* ttype, bool in_typedef, bool arg, bool
   if (ttype->is_enum() && !gen_pure_enums_) {
     pname += "::type";
   }
-
+	
+  if (optional) {
+    pname = "boost::optional<" + pname + ">";
+  }
+	
   if (arg) {
     if (is_complex_type(ttype)) {
       return "const " + pname + "&";
@@ -4465,11 +4474,13 @@ string t_cpp_generator::base_type_name(t_base_type::t_base tbase) {
  */
 string t_cpp_generator::declare_field(t_field* tfield, bool init, bool pointer, bool constant, bool reference) {
   // TODO(mcslee): do we ever need to initialize the field?
+  bool is_optional = (tfield->get_req() == t_field::T_OPTIONAL);
+  
   string result = "";
   if (constant) {
     result += "const ";
   }
-  result += type_name(tfield->get_type(),false,false,tfield->get_req() == t_field::T_OPTIONAL);
+  result += type_name(tfield->get_type(),false,false,is_optional);
   if (pointer) {
     result += "*";
   }
