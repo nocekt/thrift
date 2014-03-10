@@ -1000,8 +1000,8 @@ void t_cpp_generator::generate_struct_definition(ofstream& out,
                      << " != rhs." << (*m_iter)->get_name() << ")" << endl <<
             indent() << "  return false;" << endl <<
             indent() << "else if (" << (*m_iter)->get_name() << " && !("
-                     << (*m_iter)->get_name() << " == rhs." << (*m_iter)->get_name()
-                     << "))" << endl <<
+                     << (*m_iter)->get_name() << ".get() == rhs." << (*m_iter)->get_name()
+                     << ".get() ))" << endl <<
             indent() << "  return false;" << endl;
         }
       }
