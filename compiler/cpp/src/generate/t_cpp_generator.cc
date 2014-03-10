@@ -117,9 +117,10 @@ class t_cpp_generator : public t_oop_generator {
                                       bool pointers=false,
                                       bool read=true,
                                       bool write=true,
-                                      bool swap=false);
+                                      bool swap=false,
+  									  bool result_struct=false);
   void generate_struct_fingerprint   (std::ofstream& out, t_struct* tstruct, bool is_definition);
-  void generate_struct_reader        (std::ofstream& out, t_struct* tstruct, bool pointers=false);
+  void generate_struct_reader        (std::ofstream& out, t_struct* tstruct, bool pointers=false, bool result_struct=false);
   void generate_struct_writer        (std::ofstream& out, t_struct* tstruct, bool pointers=false);
   void generate_struct_result_writer (std::ofstream& out, t_struct* tstruct, bool pointers=false);
   void generate_struct_swap          (std::ofstream& out, t_struct* tstruct);
@@ -790,7 +791,7 @@ string t_cpp_generator::render_const_value(ofstream& out, string name, t_type* t
  */
 void t_cpp_generator::generate_cpp_struct(t_struct* tstruct, bool is_exception) {
   generate_struct_definition(f_types_, tstruct, is_exception,
-                             false, true, true, true);
+                             false, true, true, true, false);
   generate_struct_fingerprint(f_types_impl_, tstruct, true);
   generate_local_reflection(f_types_, tstruct, false);
   generate_local_reflection(f_types_impl_, tstruct, true);
@@ -814,7 +815,8 @@ void t_cpp_generator::generate_struct_definition(ofstream& out,
                                                  bool pointers,
                                                  bool read,
                                                  bool write,
-                                                 bool swap) {
+                                                 bool swap,
+												 bool result_struct) {
   string extends = "";
   if (is_exception) {
     extends = " : public ::apache::thrift::TException";
@@ -826,16 +828,10 @@ void t_cpp_generator::generate_struct_definition(ofstream& out,
 
   // Write the isset structure declaration outside the class. This makes
   // the generated code amenable to processing by SWIG.
-  // We only declare the struct if it gets used in the class.
+  // We only declare the struct if it gets used in the class
 
-  // Isset struct has boolean fields, but only for non-required fields.
-  bool has_nonrequired_fields = false;
-  for (m_iter = members.begin(); m_iter != members.end(); ++m_iter) {
-    if ((*m_iter)->get_req() != t_field::T_REQUIRED)
-      has_nonrequired_fields = true;
-  }
 
-  if (has_nonrequired_fields && (!pointers || read)) {
+  if (result_struct) {
 
     out <<
       indent() << "typedef struct _" << tstruct->get_name() << "__isset {" << endl;
@@ -950,7 +946,7 @@ void t_cpp_generator::generate_struct_definition(ofstream& out,
   }
 
   // Add the __isset data member if we need it, using the definition from above
-  if (has_nonrequired_fields && (!pointers || read)) {
+  if (result_struct) {
     out <<
       endl <<
       indent() << "_" << tstruct->get_name() << "__isset __isset;" << endl;
@@ -958,7 +954,7 @@ void t_cpp_generator::generate_struct_definition(ofstream& out,
 
   // Create a setter function for each field
   for (m_iter = members.begin(); m_iter != members.end(); ++m_iter) {
-    if (pointers) {
+    if (pointers || (!result_struct)) {
       continue;
     }
     out <<
@@ -1000,10 +996,10 @@ void t_cpp_generator::generate_struct_definition(ofstream& out,
             indent() << "  return false;" << endl;
         } else {
           out <<
-            indent() << "if (__isset." << (*m_iter)->get_name()
-                     << " != rhs.__isset." << (*m_iter)->get_name() << ")" << endl <<
+            indent() << "if (" << (*m_iter)->get_name()
+                     << " != rhs." << (*m_iter)->get_name() << ")" << endl <<
             indent() << "  return false;" << endl <<
-            indent() << "else if (__isset." << (*m_iter)->get_name() << " && !("
+            indent() << "else if (" << (*m_iter)->get_name() << " && !("
                      << (*m_iter)->get_name() << " == rhs." << (*m_iter)->get_name()
                      << "))" << endl <<
             indent() << "  return false;" << endl;
@@ -1243,7 +1239,8 @@ void t_cpp_generator::generate_local_reflection_pointer(std::ofstream& out,
  */
 void t_cpp_generator::generate_struct_reader(ofstream& out,
                                              t_struct* tstruct,
-                                             bool pointers) {
+                                             bool pointers,
+											 bool result_struct) {
   if (gen_templates_) {
     out <<
       indent() << "template <class Protocol_>" << endl <<
@@ -1340,10 +1337,13 @@ void t_cpp_generator::generate_struct_reader(ofstream& out,
           } else {
             generate_deserialize_field(out, *f_iter, "this->");
           }
-          out <<
-            indent() << isset_prefix << (*f_iter)->get_name() << " = true;" << endl;
+
+		  if(result_struct) {
+		      out <<
+		        indent() << isset_prefix << (*f_iter)->get_name() << " = true;" << endl;
+		  }
           indent_down();
-          out <<
+		  out <<
             indent() << "} else {" << endl <<
             indent() << "  xfer += iprot->skip(ftype);" << endl <<
             // TODO(dreiss): Make this an option when thrift structs
@@ -1429,7 +1429,7 @@ void t_cpp_generator::generate_struct_writer(ofstream& out,
       out << endl << indent() << (pointers ? "if(*(this->" : "if((this->") << (*f_iter)->get_name() << ")) {" << endl;
       indent_up();
     } else if(is_xception) {
-      out << endl << indent() << "if (this->__isset." << (*f_iter)->get_name() << ") {" << endl;
+      out << endl << indent() << "if (this->" << (*f_iter)->get_name() << ") {" << endl;
       indent_up();
     } else {
       out << endl;
@@ -1578,25 +1578,15 @@ void t_cpp_generator::generate_struct_swap(ofstream& out, t_struct* tstruct) {
   out <<
     indent() << "using ::std::swap;" << endl;
 
-  bool has_nonrequired_fields = false;
   const vector<t_field*>& fields = tstruct->get_members();
   for (vector<t_field*>::const_iterator f_iter = fields.begin();
        f_iter != fields.end();
        ++f_iter) {
     t_field *tfield = *f_iter;
 
-    if (tfield->get_req() != t_field::T_REQUIRED) {
-      has_nonrequired_fields = true;
-    }
-
     out <<
       indent() << "swap(a." << tfield->get_name() <<
       ", b." << tfield->get_name() << ");" << endl;
-  }
-
-  if (has_nonrequired_fields) {
-    out <<
-      indent() << "swap(a.__isset, b.__isset);" << endl;
   }
 
   // handle empty structs
@@ -3228,13 +3218,13 @@ void t_cpp_generator::generate_function_helpers(t_service* tservice,
     result.append(*f_iter);
   }
 
-  generate_struct_definition(f_header_, &result, false);
-  generate_struct_reader(out, &result);
+  generate_struct_definition(f_header_, &result, false, false, true, true, false, true);
+  generate_struct_reader(out, &result, false, true);
   generate_struct_result_writer(out, &result);
 
   result.set_name(tservice->get_name() + "_" + tfunction->get_name() + "_presult");
-  generate_struct_definition(f_header_, &result, false, true, true, gen_cob_style_);
-  generate_struct_reader(out, &result, true);
+  generate_struct_definition(f_header_, &result, false, true, true, gen_cob_style_, false, true);
+  generate_struct_reader(out, &result, true, true);
   if (gen_cob_style_) {
     generate_struct_writer(out, &result, true);
   }
