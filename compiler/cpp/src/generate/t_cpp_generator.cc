@@ -826,48 +826,6 @@ void t_cpp_generator::generate_struct_definition(ofstream& out,
   vector<t_field*>::const_iterator m_iter;
   const vector<t_field*>& members = tstruct->get_members();
 
-  // Write the isset structure declaration outside the class. This makes
-  // the generated code amenable to processing by SWIG.
-  // We only declare the struct if it gets used in the class
-
-
-  if (result_struct) {
-
-    out <<
-      indent() << "typedef struct _" << tstruct->get_name() << "__isset {" << endl;
-    indent_up();
-
-    indent(out) <<
-      "_" << tstruct->get_name() << "__isset() ";
-    bool first = true;
-    for (m_iter = members.begin(); m_iter != members.end(); ++m_iter) {
-      if ((*m_iter)->get_req() == t_field::T_REQUIRED) {
-        continue;
-      }
-      string isSet = ((*m_iter)->get_value() != NULL) ? "true" : "false";
-      if (first) {
-        first = false;
-        out <<
-          ": " << (*m_iter)->get_name() << "(" << isSet << ")";
-      } else {
-        out <<
-          ", " << (*m_iter)->get_name() << "(" << isSet << ")";
-      }
-    }
-    out << " {}" << endl;
-
-    for (m_iter = members.begin(); m_iter != members.end(); ++m_iter) {
-      if ((*m_iter)->get_req() != t_field::T_REQUIRED) {
-        indent(out) <<
-          "bool " << (*m_iter)->get_name() << ";" << endl;
-        }
-      }
-
-      indent_down();
-      indent(out) <<
-        "} _" << tstruct->get_name() << "__isset;" << endl;
-    }
-
   out << endl;
 
   // Open struct def
@@ -945,13 +903,6 @@ void t_cpp_generator::generate_struct_definition(ofstream& out,
       declare_field(*m_iter, false, pointers && !(*m_iter)->get_type()->is_xception(), !read) << endl;
   }
 
-  // Add the __isset data member if we need it, using the definition from above
-  if (result_struct) {
-    out <<
-      endl <<
-      indent() << "_" << tstruct->get_name() << "__isset __isset;" << endl;
-  }
-
   // Create a setter function for each field
   for (m_iter = members.begin(); m_iter != members.end(); ++m_iter) {
     if (pointers || (!result_struct)) {
@@ -963,15 +914,6 @@ void t_cpp_generator::generate_struct_definition(ofstream& out,
         "(" << type_name((*m_iter)->get_type(), false, true);
     out << " val) {" << endl << indent() <<
       indent() << (*m_iter)->get_name() << " = val;" << endl;
-
-    // assume all fields are required except optional fields.
-    // for optional fields change __isset.name to true
-    bool is_optional = (*m_iter)->get_req() == t_field::T_OPTIONAL;
-    if (is_optional) {
-      out <<
-        indent() <<
-        indent() << "__isset." << (*m_iter)->get_name() << " = true;" << endl;
-    }
     out <<
       indent()<< "}" << endl;
   }
@@ -1312,9 +1254,6 @@ void t_cpp_generator::generate_struct_reader(ofstream& out,
             "if (ftype == " << type_to_enum((*f_iter)->get_type()) << ") {" << endl;
           indent_up();
 
-          const char *isset_prefix =
-            ((*f_iter)->get_req() != t_field::T_REQUIRED) ? "this->__isset." : "isset_";
-
 #if 0
           // This code throws an exception if the same field is encountered twice.
           // We've decided to leave it out for performance reasons.
@@ -1327,21 +1266,25 @@ void t_cpp_generator::generate_struct_reader(ofstream& out,
 		
           bool is_optional = (*f_iter)->get_req() == t_field::T_OPTIONAL;
           if(is_optional) {
-            // Variable must be intialized. 
-            out << 
-              indent() << "this->" << (*f_iter)->get_name() << " = " + 
-              type_name((*f_iter)->get_type()) + "();" << endl;
-            generate_deserialize_field(out, *f_iter, "(*(this->", "))");
-          } else if(pointers && !(*f_iter)->get_type()->is_xception()) {
+			if(pointers && !(*f_iter)->get_type()->is_xception()) {
+			  // boost::optional must be initialized 
+		      out << 
+				indent() << "*(this->" << (*f_iter)->get_name() << ") = " + 
+				type_name((*f_iter)->get_type()) + "();" << endl;
+			  generate_deserialize_field(out, *f_iter, "this->", "->get()");
+          	} else {
+			  // boost::optional must be initialized 
+		      out << 
+				indent() << "this->" << (*f_iter)->get_name() << " = " + 
+				type_name((*f_iter)->get_type()) + "();" << endl;
+			  generate_deserialize_field(out, *f_iter, "(this->", ").get()");
+			}
+		  } else if(pointers && !(*f_iter)->get_type()->is_xception()) {
             generate_deserialize_field(out, *f_iter, "(*(this->", "))");
           } else {
             generate_deserialize_field(out, *f_iter, "this->");
           }
 
-		  if(result_struct) {
-		      out <<
-		        indent() << isset_prefix << (*f_iter)->get_name() << " = true;" << endl;
-		  }
           indent_down();
 		  out <<
             indent() << "} else {" << endl <<
@@ -1379,7 +1322,7 @@ void t_cpp_generator::generate_struct_reader(ofstream& out,
   for (f_iter = fields.begin(); f_iter != fields.end(); ++f_iter) {
     if ((*f_iter)->get_req() == t_field::T_REQUIRED)
       out <<
-        indent() << "if (!isset_" << (*f_iter)->get_name() << ')' << endl <<
+        indent() << "if (!" << (*f_iter)->get_name() << ')' << endl <<
         indent() << "  throw TProtocolException(TProtocolException::INVALID_DATA);" << endl;
   }
 
@@ -1524,7 +1467,7 @@ void t_cpp_generator::generate_struct_result_writer(ofstream& out,
         " else if ";
     }
 
-    out << "(this->__isset." << (*f_iter)->get_name() << ") {" << endl;
+    out << "(this->" << (*f_iter)->get_name() << ") {" << endl;
 
     indent_up();
 
@@ -1535,7 +1478,14 @@ void t_cpp_generator::generate_struct_result_writer(ofstream& out,
       type_to_enum((*f_iter)->get_type()) << ", " <<
       (*f_iter)->get_key() << ");" << endl;
     // Write field contents
-    if (pointers) {
+	bool is_optional = ((*f_iter)->get_req() == t_field::T_OPTIONAL);
+	if(is_optional) {
+	  if (pointers) {
+	    generate_serialize_field(out, *f_iter, "(*(this->", ")).get()");
+	  } else {
+	    generate_serialize_field(out, *f_iter, "(this->", ").get()");
+	  }
+	} else if (pointers) {
       generate_serialize_field(out, *f_iter, "(*(this->", "))");
     } else {
       generate_serialize_field(out, *f_iter, "this->");
@@ -2614,19 +2564,31 @@ void t_cpp_generator::generate_service_client(t_service* tservice, string style)
         out <<
           indent() << "}" << endl;
 
-        if (!(*f_iter)->get_returntype()->is_void() &&
-            !is_complex_type((*f_iter)->get_returntype())) {
-          t_field returnfield((*f_iter)->get_returntype(), "_return");
-          out <<
-            indent() << declare_field(&returnfield) << endl;
+        if (!(*f_iter)->get_returntype()->is_void()) {
+          if(!is_complex_type((*f_iter)->get_returntype())) {
+            t_field returnfield((*f_iter)->get_returntype(), "_return");
+		    returnfield.set_req(t_field::T_OPTIONAL);
+            out <<
+              indent() << declare_field(&returnfield) << endl;
+		  } else {
+			t_field wrapper((*f_iter)->get_returntype(), "wrapper");
+		    wrapper.set_req(t_field::T_OPTIONAL);
+            out <<
+              indent() << declare_field(&wrapper) << endl;
+		  }
         }
 
         out <<
           indent() << resultname << " result;" << endl;
 
         if (!(*f_iter)->get_returntype()->is_void()) {
-          out <<
-            indent() << "result.success = &_return;" << endl;
+		  if (!is_complex_type((*f_iter)->get_returntype())) {
+            out <<
+              indent() << "result.success = &_return;" << endl;
+          } else {
+			out <<
+              indent() << "result.success = &wrapper;" << endl;
+		  }
         }
 
         out <<
@@ -2639,7 +2601,8 @@ void t_cpp_generator::generate_service_client(t_service* tservice, string style)
         if (!(*f_iter)->get_returntype()->is_void()) {
           if (is_complex_type((*f_iter)->get_returntype())) {
             out <<
-              indent() << "if (result.__isset.success) {" << endl <<
+              indent() << "if (*(result.success)) {" << endl <<
+			  indent() << "  _return = result.success->get();" << endl <<
               indent() << "  // _return pointer has now been filled" << endl;
             if (style == "Cob" && !gen_no_client_completion_) {
               out <<
@@ -2651,14 +2614,14 @@ void t_cpp_generator::generate_service_client(t_service* tservice, string style)
               indent() << "}" << endl;
           } else {
             out <<
-              indent() << "if (result.__isset.success) {" << endl;
+              indent() << "if (*(result.success)) {" << endl;
             if (style == "Cob" && !gen_no_client_completion_) {
               out <<
                 indent() << "  completed = true;" << endl <<
                 indent() << "  completed__(true);" << endl;
             }
             out <<
-              indent() << "  return _return;" << endl <<
+              indent() << "  return _return.get();" << endl <<
               indent() << "}" << endl;
           }
         }
@@ -2668,14 +2631,14 @@ void t_cpp_generator::generate_service_client(t_service* tservice, string style)
         vector<t_field*>::const_iterator x_iter;
         for (x_iter = xceptions.begin(); x_iter != xceptions.end(); ++x_iter) {
           out <<
-            indent() << "if (result.__isset." << (*x_iter)->get_name() << ") {" << endl;
+            indent() << "if (result." << (*x_iter)->get_name() << ") {" << endl;
           if (style == "Cob" && !gen_no_client_completion_) {
             out <<
               indent() << "  completed = true;" << endl <<
               indent() << "  completed__(true);" << endl;
           }
           out  <<
-            indent() << "  throw result." << (*x_iter)->get_name() << ";" << endl <<
+            indent() << "  throw result." << (*x_iter)->get_name() << ".get();" << endl <<
             indent() << "}" << endl;
         }
 
@@ -3207,6 +3170,8 @@ void t_cpp_generator::generate_function_helpers(t_service* tservice,
 
   t_struct result(program_, tservice->get_name() + "_" + tfunction->get_name() + "_result");
   t_field success(tfunction->get_returntype(), "success", 0);
+  success.set_req(t_field::T_OPTIONAL);
+
   if (!tfunction->get_returntype()->is_void()) {
     result.append(&success);
   }
@@ -3215,7 +3180,9 @@ void t_cpp_generator::generate_function_helpers(t_service* tservice,
   const vector<t_field*>& fields = xs->get_members();
   vector<t_field*>::const_iterator f_iter;
   for (f_iter = fields.begin(); f_iter != fields.end(); ++f_iter) {
-    result.append(*f_iter);
+    t_field xception = **f_iter;
+	xception.set_req(t_field::T_OPTIONAL);
+	result.append(&xception);
   }
 
   generate_struct_definition(f_header_, &result, false, false, true, true, false, true);
@@ -3329,7 +3296,9 @@ void t_cpp_generator::generate_process_function(t_service* tservice,
     if (!tfunction->is_oneway() && !tfunction->get_returntype()->is_void()) {
       if (is_complex_type(tfunction->get_returntype())) {
         first = false;
-        out << "iface_->" << tfunction->get_name() << "(result.success";
+		// boost::optional must be initialized 
+		out << "result.success = " << type_name(tfunction->get_returntype()) << "();" << endl;
+        out << "iface_->" << tfunction->get_name() << "(result.success.get()";
       } else {
         out << "result.success = iface_->" << tfunction->get_name() << "(";
       }
@@ -3347,12 +3316,6 @@ void t_cpp_generator::generate_process_function(t_service* tservice,
     }
     out << ");" << endl;
 
-    // Set isset on success field
-    if (!tfunction->is_oneway() && !tfunction->get_returntype()->is_void()) {
-      out <<
-        indent() << "result.__isset.success = true;" << endl;
-    }
-
     indent_down();
     out << indent() << "}";
 
@@ -3364,9 +3327,7 @@ void t_cpp_generator::generate_process_function(t_service* tservice,
           indent_up();
           out <<
             indent() << "result." << (*x_iter)->get_name() << " = " <<
-              (*x_iter)->get_name() << ";" << endl <<
-            indent() << "result.__isset." << (*x_iter)->get_name() <<
-              " = true;" << endl;
+              (*x_iter)->get_name() << ";" << endl;
           indent_down();
           out << indent() << "}";
         } else {
@@ -4464,13 +4425,13 @@ string t_cpp_generator::base_type_name(t_base_type::t_base tbase) {
  */
 string t_cpp_generator::declare_field(t_field* tfield, bool init, bool pointer, bool constant, bool reference) {
   // TODO(mcslee): do we ever need to initialize the field?
-  bool is_optional = (tfield->get_req() == t_field::T_OPTIONAL);
+  bool optional = (tfield->get_req() == t_field::T_OPTIONAL);
   
   string result = "";
   if (constant) {
     result += "const ";
   }
-  result += type_name(tfield->get_type(),false,false,is_optional);
+  result += type_name(tfield->get_type(),false,false,optional);
   if (pointer) {
     result += "*";
   }
